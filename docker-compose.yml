@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # 1. Frontend Web Portal (GIGW 3.0 / UX4G)
+  web-portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sap_qmp_web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - queue-backend
+
+  # 2. Java 17 LTS Backend Microservice
+  queue-backend:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: sap_qmp_backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-db:3306/sap_qmp_db?useSSL=false&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: rootpassword
+      SPRING_REDIS_HOST: redis-cache
+      SPRING_REDIS_PORT: 6379
+    depends_on:
+      - mysql-db
+      - redis-cache
+
+  # 3. Redis In-Memory Cache (Active Queue & Distributed Locks)
+  redis-cache:
+    image: redis:7-alpine
+    container_name: sap_qmp_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # 4. MySQL 8.0 Primary RDBMS (ACID Compliant)
+  mysql-db:
+    image: mysql:8.0
+    container_name: sap_qmp_mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: sap_qmp_db
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:
+  redis_data:

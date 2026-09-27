@@ -1,0 +1,254 @@
+openapi: 3.0.3
+info:
+  title: Smart Agricultural Procurement Queue Management Platform (SAP-QMP) API
+  description: >-
+    National Sovereign API contract connecting the Farmer Web/Mobile Client,
+    Mandi Weighbridge IoT Gateways, State Land Registries (Bhulekh/BhuNaksha),
+    C-DAC Mobile Seva (MSDG), and PFMS / DBT Remittance pipelines.
+  version: 1.0.0
+  contact:
+    name: Department of Consumer Affairs, Food & Public Distribution
+    url: https://consumeraffairs.nic.in
+servers:
+  - url: https://api.procurement.gov.in/v1
+    description: Production National SDC Cluster
+  - url: http://localhost:8080/v1
+    description: Local Development Server
+
+paths:
+  /auth/otp/generate:
+    post:
+      summary: Dispatch OTP to Aadhaar-Linked Mobile
+      description: Rate-limited authentication request triggering C-DAC Mobile Seva SMS gateway.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mobileNumber]
+              properties:
+                mobileNumber:
+                  type: string
+                  pattern: '^[6-9]\d{9}$'
+                  example: '9876543210'
+      responses:
+        '200':
+          description: OTP dispatched successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: 'SUCCESS' }
+                  txnId: { type: string, example: 'TXN-902184-OTP' }
+                  message: { type: string, example: 'OTP sent to registered mobile via MSDG' }
+
+  /auth/otp/verify:
+    post:
+      summary: Verify OTP and Retrieve Synced Land Records
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mobileNumber, otp, txnId]
+              properties:
+                mobileNumber: { type: string, example: '9876543210' }
+                otp: { type: string, example: '123456' }
+                txnId: { type: string, example: 'TXN-902184-OTP' }
+      responses:
+        '200':
+          description: Verified farmer profile with cross-referenced land survey records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FarmerProfile'
+
+  /mandis:
+    get:
+      summary: List Active Mandis with Live Capacity & Wait Time
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string }
+        - name: district
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Active Mandis and dynamic queue metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MandiDetails'
+
+  /mandis/{mandiId}/slots:
+    get:
+      summary: Get Hourly Capacity Slots for Selected Date
+      parameters:
+        - name: mandiId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: date
+          in: query
+          required: true
+          schema: { type: string, format: date, example: '2026-09-27' }
+      responses:
+        '200':
+          description: Available capacity slots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CapacitySlot'
+
+  /appointments/book:
+    post:
+      summary: Atomic Booking of Procurement Slot
+      description: Atomically reserves mandi capacity window using optimistic locking.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlotBookingRequest'
+      responses:
+        '201':
+          description: Slot booked & Virtual Token generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualTokenReceipt'
+        '409':
+          description: Mandi capacity exceeded or concurrent reservation collision
+
+  /appointments/track/{token}:
+    get:
+      summary: Track End-to-End Procurement Lifecycle
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, example: 'TK-UP-2026-0042' }
+      responses:
+        '200':
+          description: Procurement status, assay details, and DBT remittance receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentStatusDetails'
+
+  /operator/checkin:
+    post:
+      summary: Scan QR Code & Check In Farmer at Mandi Gate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tokenNumber, mandiId]
+              properties:
+                tokenNumber: { type: string, example: 'TK-UP-2026-0042' }
+                mandiId: { type: integer, example: 1 }
+      responses:
+        '200':
+          description: Farmer checked in and placed into active weighbridge queue
+
+  /operator/weighment:
+    post:
+      summary: Submit Electronic Weighbridge and Moisture Assay Slip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tokenNumber, grossWeightKg, tareWeightKg, moisturePercent, qualityGrade]
+              properties:
+                tokenNumber: { type: string }
+                grossWeightKg: { type: number, example: 12450 }
+                tareWeightKg: { type: number, example: 3950 }
+                moisturePercent: { type: number, example: 14.5 }
+                qualityGrade: { type: string, enum: [GRADE_A, GRADE_COMMON, REJECTED] }
+      responses:
+        '200':
+          description: Weighment recorded and DBT payment triggered automatically
+
+components:
+  schemas:
+    FarmerProfile:
+      type: object
+      properties:
+        farmerId: { type: integer }
+        name: { type: string }
+        mobile: { type: string }
+        aadhaarMasked: { type: string }
+        bankMasked: { type: string }
+        landRecords:
+          type: array
+          items:
+            type: object
+            properties:
+              khasra: { type: string }
+              areaHa: { type: number }
+              crop: { type: string }
+              maxPermittedTonnes: { type: number }
+
+    MandiDetails:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string }
+        name: { type: string }
+        district: { type: string }
+        activeBridges: { type: integer }
+        dailyCapacityTonnes: { type: number }
+        currentBookedTonnes: { type: number }
+        liveWaitMins: { type: integer }
+
+    CapacitySlot:
+      type: object
+      properties:
+        slotId: { type: integer }
+        timeWindow: { type: string, example: '10:00 AM - 11:00 AM' }
+        remainingTonnes: { type: number }
+        vehiclesLeft: { type: integer }
+        status: { type: string, enum: [AVAILABLE, ALMOST_FULL, FULL] }
+
+    SlotBookingRequest:
+      type: object
+      required: [slotId, cropType, declaredTonnage, vehicleType, vehicleNo]
+      properties:
+        slotId: { type: integer }
+        cropType: { type: string }
+        declaredTonnage: { type: number }
+        vehicleType: { type: string }
+        vehicleNo: { type: string }
+
+    VirtualTokenReceipt:
+      type: object
+      properties:
+        token: { type: string, example: 'TK-UP-2026-0042' }
+        qrPayload: { type: string }
+        scheduledDate: { type: string }
+        slotTime: { type: string }
+        queuePosition: { type: integer }
+        estimatedWaitMins: { type: integer }
+
+    AppointmentStatusDetails:
+      type: object
+      properties:
+        token: { type: string }
+        farmerName: { type: string }
+        status: { type: string }
+        moisturePercent: { type: number }
+        netWeightKg: { type: number }
+        totalPayable: { type: number }
+        utrNo: { type: string }
